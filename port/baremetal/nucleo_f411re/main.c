@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include "usecboot.h"
+#include "soft_sha256.h"
 #include "root_pkey.h"
 
 #ifndef container_of
@@ -40,17 +41,82 @@
 
 #define GPIOA_ODR          (*(volatile uint32_t*)(GPIOA_BASE + 0x14))
 
+#define SCS_BASE        (0xE000E000UL)
+#define DWT_BASE        (SCS_BASE + 0x1000UL)
+#define DEMCR           (*(volatile uint32_t *)(SCS_BASE + 0x0DFCUL))
+#define DWT_CTRL        (*(volatile uint32_t *)(DWT_BASE + 0x0000UL))
+#define DWT_CYCCNT      (*(volatile uint32_t *)(DWT_BASE + 0x0004UL))
+
+// RCC registers (STM32F4 specific, but we'll read them directly)
+#define RCC_CR      (*(volatile uint32_t *)(RCC_BASE + 0x00UL))
+#define RCC_CFGR    (*(volatile uint32_t *)(RCC_BASE + 0x08UL))
+#define RCC_PLLCFGR (*(volatile uint32_t *)(RCC_BASE + 0x04UL))
+
+// Register bit definitions
+#define RCC_CR_HSION      (1UL << 0U)
+#define RCC_CR_HSIRDY     (1UL << 1U)
+#define RCC_CR_MSION      (1UL << 0U)  // Note: MSI shares same bit position in different register view
+#define RCC_CR_MSIRDY     (1UL << 1U)
+#define RCC_CR_PLLON      (1UL << 24U)
+#define RCC_CR_PLLRDY     (1UL << 25U)
+
+#define RCC_CFGR_SWS_Pos  (2U)
+#define RCC_CFGR_SWS_Msk  (0x3UL << RCC_CFGR_SWS_Pos)
+#define RCC_CFGR_SWS      RCC_CFGR_SWS_Msk
+
+#define RCC_CR_MSIRANGE_Pos (4U)
+#define RCC_CR_MSIRANGE_Msk (0xFUL << RCC_CR_MSIRANGE_Pos)
+
+#define DEMCR_TRCENA      (1UL << 24U)
+#define DWT_CTRL_CYCCNTENA (1UL << 0U)
+
+struct soft_sha256_ctx hash_ctx;
+
 struct myslot {
 	uint32_t offset;
+	struct soft_sha256_ctx *hctx;
 	struct usecboot_slot slot;
 };
+
+void led_set(void)
+{
+	GPIOA_ODR |= (1 << 5);
+}
+
+void led_reset(void)
+{
+	GPIOA_ODR &= ~(1 << 5);
+}
 
 void *memcpy(void *dst, const void *src, size_t len);
 void uart_puts(const char *str);
 
 int prep(const struct usecboot_slot *slot)
 {
-	(void)slot;
+	uint8_t msg[2048];
+	uint8_t hash[32];
+	size_t len = 0x70000;
+	uint8_t off = 0;
+	int rc;
+	struct soft_sha256_ctx ctx;
+
+	led_set();
+	soft_sha256_init(&ctx);
+	while (len != 0) {
+		const size_t rdlen = len < sizeof(msg) ? len : sizeof(msg);
+
+		rc = slot->api->read(slot, off, (void *)msg, rdlen);
+		if (rc != USECBOOTERR_NONE) {
+			break;
+		}
+
+		soft_sha256_update(&ctx, msg, rdlen);
+		off += rdlen;
+		len -= rdlen;
+	}
+
+	soft_sha256_final (&ctx, hash);
+	led_reset();
 	return USECBOOTERR_NONE;
 }
 
@@ -88,22 +154,63 @@ void clean(const struct usecboot_slot *slot)
 	(void)slot;
 }
 
-const struct usecboot_slotapi myapi = {
+void hash_init(const struct usecboot_slot *slot)
+{
+	const struct myslot *myslot = container_of(slot, struct myslot, slot);
+
+	soft_sha256_init(myslot->hctx);
+}
+
+void hash_update(const struct usecboot_slot *slot, const void *msg,
+		   size_t msglen)
+{
+	const struct myslot *myslot = container_of(slot, struct myslot, slot);
+
+	soft_sha256_update(myslot->hctx, msg, msglen);
+}
+
+int hash_cmp(const struct usecboot_slot *slot, const void *hash,
+	     size_t hashlen)
+{
+	if (hashlen != SOFT_SHA256_DIGESTSIZE) {
+		return 1;
+	}
+
+	const struct myslot *myslot = container_of(slot, struct myslot, slot);
+	const uint8_t *p = (const uint8_t *)hash;
+	uint8_t digest[SOFT_SHA256_DIGESTSIZE];
+	int rv = 0;
+
+	soft_sha256_final(myslot->hctx, (void *)digest);
+	for (size_t i = 0; i < sizeof(digest); i++) {
+		rv |= digest[i] ^ p[i];
+		digest[i] = 0U;
+	}
+
+	return rv == 0U ? 0 : 1;
+}
+
+const struct usecboot_slotapi slotapi = {
 	.read = read,
 	.prep = prep,
 	.boot = boot,
 	.clean = clean,
+	.hash_init = hash_init,
+	.hash_update = hash_update,
+	.hash_cmp = hash_cmp,
 };
 
 const struct myslot myslot[2] = {
 	{
 		.offset = IMAGE1_BASE,
+		.hctx = &hash_ctx,
 		.slot.size = 2<<16,
-		.slot.api = &myapi,
+		.slot.api = &slotapi,
 	},{
 		.offset = IMAGE2_BASE,
+		.hctx = &hash_ctx,
 		.slot.size = 2<<16,
-		.slot.api = &myapi,
+		.slot.api = &slotapi,
 	},
 };
 
@@ -138,13 +245,12 @@ int usecboot_get_rootpkey(void *pkey, size_t len)
 }
 
 void led_init(void);
-void led_toggle(int cnt);
 void uart_init(void);
 
 int main(void)
 {
 	led_init();
-	led_toggle(1);
+	led_reset();
 	uart_init();
 	usecboot_boot();
     	return 0;
@@ -168,15 +274,6 @@ void led_init(void)
 	// Setup LED
 	RCC_AHB1ENR |= (1 << 0);
 	GPIOA_MODER |= (1 << 10);
-}
-
-void led_toggle(int cnt)
-{
-	while (cnt != 0) {
-		GPIOA_ODR ^= (1 << 5);
-        	for(volatile int i = 0; i < 10000; i++);
-		cnt--;
-	}
 }
 
 void uart_clear_dr(void)

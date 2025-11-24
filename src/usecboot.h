@@ -9,8 +9,8 @@
  * this header provides the public interface and structures.
  */
 
-#ifndef INCLUDE_USECBOOT_H_
-#define INCLUDE_USECBOOT_H_
+#ifndef USECBOOT_H_
+#define USECBOOT_H_
 
 #if defined(STRUCT_PACKED)
 #undef STRUCT_PACKED
@@ -41,6 +41,11 @@ STRUCT_PACKED usecboot_slotapi {
 		    void *data, size_t len);
 	void (*boot)(const struct usecboot_slot *slot, uint32_t ioff);
 	void (*clean)(const struct usecboot_slot *slot);
+	void (*hash_init)(const struct usecboot_slot *slot);
+	void (*hash_update)(const struct usecboot_slot *slot, const void *msg,
+			    size_t msglen);
+	int (*hash_cmp)(const struct usecboot_slot *slot, const void *hash,
+			size_t hash_len);
 };
 
 STRUCT_PACKED usecboot_slot {
@@ -164,4 +169,4 @@ void usecboot_log(const char *fmt, ...);
 }
 #endif
 
-#endif /* INCLUDE_USECBOOT_H_ */
+#endif /* USECBOOT_H_ */

@@ -11,19 +11,6 @@
  */
 static uint8_t msg[CONFIG_USECBOOT_MAX_HDRSIZE];
 
-static int usecboot_cmp(const void *d1, const void *d2, size_t size)
-{
-	const uint8_t *p1 = d1;
-	const uint8_t *p2 = d2;
-	uint8_t result = 0;
-
-	for (size_t i = 0; i < size; i++) {
-		result |= p1[i] ^ p2[i];
-	}
-
-    	return (result == 0) ? 0 : 1;
-}
-
 static void usecboot_cpy(void *d1, const void *d2, size_t size)
 {
 	uint8_t *p1 = d1;
@@ -211,8 +198,6 @@ static int usecboot_hash_ok(const struct usecboot_slot *slot, uint32_t *ioff)
 		.hdr.tag = USECBOOT_HASH_TAG,
 		.hdr.len = sizeof(hashtlv),
 	};
-	uint8_t hash[USECBOOT_HASH_SIZE];
-	crypto_sha512_ctx ctx;
 	uint32_t off;
 	size_t len;
 	int rc;
@@ -227,7 +212,7 @@ static int usecboot_hash_ok(const struct usecboot_slot *slot, uint32_t *ioff)
 	len = usecboot_getbe32(hashtlv.msg_size);
 	*ioff = off;
 
-	crypto_sha512_init(&ctx);
+	slot->api->hash_init(slot);
 	while (len != 0) {
 		const size_t rdlen = len < sizeof(msg) ? len : sizeof(msg);
 
@@ -236,17 +221,12 @@ static int usecboot_hash_ok(const struct usecboot_slot *slot, uint32_t *ioff)
 			break;
 		}
 
-		crypto_sha512_update(&ctx, msg, rdlen);
+		slot->api->hash_update(slot, msg, rdlen);
 		off += rdlen;
 		len -= rdlen;
 	}
 
-	crypto_sha512_final (&ctx, hash);
-	if (rc != USECBOOTERR_NONE) {
-		goto err_out;
-	}
-
-	if (usecboot_cmp(hash, hashtlv.hash, USECBOOT_HASH_SIZE) != 0) {
+	if (slot->api->hash_cmp(slot, hashtlv.hash, USECBOOT_HASH_SIZE) != 0) {
 		goto err_out;
 	}
 
@@ -267,13 +247,17 @@ void usecboot_boot(void)
 		const struct usecboot_slot *slot=usecboot_get_slot(idx);
 		uint32_t img_off;
 
-		if ((slot == NULL) || (slot->size == 0U)) {
+		if ((slot == NULL) || (slot->size == 0U) ||
+		    (slot->api == NULL)) {
 			break;
 		}
 
 		if ((slot->api->prep == NULL) ||
 		    (slot->api->read == NULL) ||
-		    (slot->api->boot == NULL)) {
+		    (slot->api->boot == NULL) ||
+		    (slot->api->hash_init == NULL) ||
+		    (slot->api->hash_update == NULL) ||
+		    (slot->api->hash_cmp == NULL)) {
 			USECBOOT_LOG("Missing required slot API routines\r\n");
 			continue;
 		}

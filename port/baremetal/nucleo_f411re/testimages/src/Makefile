@@ -54,6 +54,8 @@ flash: $(BUILD_DIR)/signed_firmware.bin
 	@echo "Flashing firmware..."
 	st-flash --connect-under-reset write $(BUILD_DIR)/signed_firmware.bin 0x08020000
 
+signed: $(BUILD_DIR)/signed_firmware.bin
+
 # Analysis targets
 size: $(TARGET)
 	@$(SIZE) $<
@@ -62,4 +64,4 @@ size: $(TARGET)
 clean:
 	rm -rf $(BUILD_DIR)
 
-.PHONY: all clean size
+.PHONY: all signed clean size

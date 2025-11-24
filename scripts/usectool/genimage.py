@@ -18,8 +18,8 @@ def load_private_key(filename, password=None):
         )
     return private_key
 
-def sha512_hash(data):
-    digest = hashes.Hash(hashes.SHA512())
+def sha256_hash(data):
+    digest = hashes.Hash(hashes.SHA256())
     digest.update(data)
     return digest.finalize()
 
@@ -74,10 +74,10 @@ def main(firmware, private_key, password, signed_key, header_size, user_script, 
 
         # Calculate hash of firmware payload (excluding header)
         click.echo(f"Calculating SHA512 hash of firmware payload...")
-        ihash = sha512_hash(firmware_data[header_size:])
+        ihash = sha256_hash(firmware_data[header_size:])
 
         # Create hash TLV
-        hashtlv_fmt = '> B B I I 64s'
+        hashtlv_fmt = '> B B I I 32s'
         hashtlv_size = struct.calcsize(hashtlv_fmt)
         hashtlv = struct.pack(
             hashtlv_fmt,

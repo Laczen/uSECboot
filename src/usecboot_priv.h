@@ -9,8 +9,8 @@
  * this header provides the private interface and structures.
  */
 
-#ifndef INCLUDE_USECBOOT_PRIV_H_
-#define INCLUDE_USECBOOT_PRIV_H_
+#ifndef USECBOOT_PRIV_H_
+#define USECBOOT_PRIV_H_
 
 /* TAGS 0x10..0x1f are reserved for signatures */
 #define USECBOOT_SIGN_TAG_ED25519	0x10
@@ -26,10 +26,14 @@
 #define USECBOOT_HASH_TAG	0x21
 
 #if USECBOOT_SIGN_TAG == USECBOOT_SIGN_TAG_ED25519
-#define USECBOOT_HASH_SIZE 64
 #define USECBOOT_PKEY_SIZE 32
 #define USECBOOT_SIGN_SIZE 64
-#define USECBOOT_HMAC_SIZE 64
+#endif
+
+#ifdef CONFIG_USECBOOT_HASH_SIZE
+#define USECBOOT_HASH_SIZE CONFIG_USECBOOT_HASH_SIZE
+#else
+#define USECBOOT_HASH_SIZE 32
 #endif
 
 #include "usecboot.h"
@@ -64,4 +68,4 @@ STRUCT_PACKED usecboot_pubkey_tlv {
 #define USECBOOT_LOG(...) ((void)0)
 #endif
 
-#endif /* INCLUDE_USECBOOT_PRIV_H_ */
+#endif /* USECBOOT_PRIV_H_ */
