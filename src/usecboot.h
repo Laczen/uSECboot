@@ -26,14 +26,20 @@
 extern "C" {
 #endif
 
-enum usecboot_error {
-	USECBOOTERR_NONE = 0,	 /* No error */
-	USECBOOTERR_ENOENT = 2,	 /* No such file or directory */
-	USECBOOTERR_EFAULT = 14, /* Bad address */
-	USECBOOTERR_EINVAL = 22, /* Invalid argument */
+enum usecboot_rc_values {
+	USECBOOTOK = 0x4B434F52,	/* "RCOK" No error */
+	USECBOOTERR = 0x4C464352,	/* "RCFL" Failure */
 };
 
 struct usecboot_slot;
+
+STRUCT_PACKED usecboot_slot_state {
+	uint32_t seed;
+	uint32_t hsig;
+	uint32_t ihsh;
+	uint32_t ioff;
+	uint32_t chksum;
+};
 
 STRUCT_PACKED usecboot_slotapi {
 	int (*prep)(const struct usecboot_slot *slot);
@@ -65,6 +71,13 @@ STRUCT_PACKED usecboot_tlv_hdr {
 
 void usecboot_boot(void);
 
+/* The following routine can be used to validate the secure_state, if
+ * something is wrong with the secure state this routine will result in a
+ * panic state that stops execution.
+ */
+
+void usecboot_state_valid(struct usecboot_slot_state *state);
+
 /* The following routine can be used by the port to retrieve custom TLV's
  * in the slot routines prep, read, boot or clean. This can be used e.g.
  * to check if there is a match between the board and the firmware.
@@ -82,81 +95,37 @@ void usecboot_boot(void);
  *	.hdr.tag = 0x31,
  *      .hdr.len = sizeof(version),
  * };
- * rc = usecboot_get_tlv(slot, &version, NULL);
+ * int rc = usecboot_get_tlv(slot, &version, NULL);
  *
+ * Return code: USECBOOTOK if found, USECBOOTERR if failed.
  */
 
-int usecboot_get_tlv(const struct usecboot_slot *slot,
-		     void *tlv, uint32_t *pos);
-
-/* The following routine can be used by the port to calculate a hmac over
- * a certain range of data in a slot. The routine uses the read routine
- * provided in the slot api.
- *
- * Parameters:
- * slot:     the slot where data resides,
- * off:      start position of data,
- * len:	     length of data,
- * key:      pointer to private key used in hmac,
- * key_len:  length of the key,
- * hmac:     hmac output,
- * hmac_len: length of the hmac,
- * Return: -USECBOOTERR_EFAULT on failure, 0 otherwise.
- */
-
-int usecboot_hmac_calc(const struct usecboot_slot *slot, uint32_t off,
-		       size_t len, const uint8_t *key, size_t key_len,
-		       uint8_t *hmac, size_t hmac_len);
-
-/* The following routine can be used by the port to verify a hmac over
- * a certain range of data in a slot. The routine uses the read routine
- * provided in the slot api.
- *
- * Parameters:
- * slot:     the slot where data resides,
- * off:      start position of data,
- * len:	     length of data,
- * key:      pointer to private key used in hmac,
- * key_len:  length of the key,
- * hmac:     hmac input,
- * hmac_len: length of the hmac,
- * Return: 0 on match, 1 otherwise.
- */
-
-int usecboot_hmac_vrfy(const struct usecboot_slot *slot, uint32_t off,
-		       size_t len, const uint8_t *key, size_t key_len,
-		       const uint8_t *hmac, size_t hmac_len);
+int usecboot_tlv(const struct usecboot_slot *slot, void *tlv, uint32_t *pos);
 
 /*
  * The following routine needs to be provided by the port, it should return
  * a pointer to the slot or NULL in case of invalid idx or error.
  */
 
-const struct usecboot_slot *usecboot_get_slot(uint8_t idx);
-
-/*
- * The following routine needs to be provided by the port, it should copy
- * the root pubkey.
- * The routine should return:
- *   USECBOOTERR_NONE: requested root pubkey matches len and is set,
- *   -USECBOOTERR_EINVAL: requested root pubkey len does not match.
- */
-
-int usecboot_get_rootpkey(void *pkey, size_t len);
+const struct usecboot_slot *usecboot_slot(uint8_t idx);
 
 /*
  * The following routine needs to be provided by the port, it should provide
- * any rejected pubkey that has the correct length.
- * The routine should return:
- *   USECBOOTERR_NONE: rejected pubkey and the size matches "len",
- *   -USECBOOTERR_ENOENT: no more rejected pubkey entries,
- *   -USECBOOTERR_EINVAL: pubkey size does not match "len",
+ * the root pubkey.
  *
- * When no rejected pubkeys are available and/or this feature is not supported
- * it should return -USECBOOTERR_ENOENT.
+ * Return code: USECBOOTOK if set, USECBOOTERR if failed.
  */
 
-int usecboot_get_rejected_pubkey(uint32_t idx, uint8_t *pubkey, size_t len);
+int usecboot_rootpkey(void *pkey, size_t len);
+
+/*
+ * The following routine needs to be provided by the port, it should verify
+ * if the pubkey is still allowed to be used (not on a list of rejected pubeys)
+ *
+ * Return code: USECBOOTOK if allowed, USECBOOTERR if not allowed.
+ */
+
+int usecboot_allowed_pubkey(uint8_t *pubkey, size_t len);
 
 /*
  * The following routine needs to be provided by the port, it should output

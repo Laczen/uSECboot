@@ -38,6 +38,8 @@
 
 #include "usecboot.h"
 
+#define USECBOOT_SEED 0x9E3779B9
+
 STRUCT_PACKED usecboot_hash_tlv {
 	struct usecboot_tlv_hdr hdr;
 	uint8_t offset[4];	/* offset from start of header in big endian */

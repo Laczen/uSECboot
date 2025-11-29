@@ -30,37 +30,42 @@ static int usecboot_read(const struct usecboot_slot *slot, uint32_t start,
 			 void *data, size_t len)
 {
 	if ((slot->size < start) || ((slot->size - start) < len)) {
-		return -USECBOOTERR_EINVAL;
+		return USECBOOTERR;
 	}
 
 	return slot->api->read(slot, start, data, len);
 }
 
-/* To get a specific tlv: fill in the tlv header of a pointer to the
+static void usecboot_clean(const struct usecboot_slot *slot) {
+	if (slot->api->clean == NULL) {
+		return;
+	}
+
+	slot->api->clean(slot);
+}
+
+/* To retrieve a specific tlv: fill in the tlv header of a pointer to the
  * desired tlv with the TAG and the size and call usecboot_get_tlv
  */
-int usecboot_get_tlv(const struct usecboot_slot *slot,
-		     void *tlv, uint32_t *pos)
+int usecboot_tlv(const struct usecboot_slot *slot, void *tlv, uint32_t *pos)
 {
 	struct usecboot_tlv_hdr *hdr = (struct usecboot_tlv_hdr *)tlv;
 	struct usecboot_tlv_hdr wlk;
 	uint32_t rdpos = 0;
-	int rc = 0;
+	int rc = USECBOOTERR;
 
 	for (;;) {
 		if (rdpos > CONFIG_USECBOOT_MAX_HDRSIZE) {
-			rc = -USECBOOTERR_ENOENT;
 			goto err_out;
 		}
 
 		rc = usecboot_read(slot, rdpos, (void *)&wlk, sizeof(wlk));
-		if (rc != USECBOOTERR_NONE) {
+		if (rc != USECBOOTOK) {
 			goto err_out;
 		}
 
 		if ((wlk.tag == USECBOOT_END_TAG) ||
 		    (wlk.len == USECBOOT_END_LEN)) {
-			rc = -USECBOOTERR_ENOENT;
 			goto err_out;
 		}
 
@@ -74,10 +79,25 @@ int usecboot_get_tlv(const struct usecboot_slot *slot,
 		rdpos += wlk.len;
 	}
 
-	return usecboot_read(slot, rdpos, tlv, wlk.len);
+	rc = usecboot_read(slot, rdpos, tlv, wlk.len);
+	if (rc != USECBOOTOK) {
+		goto err_out;
+	}
+
+	return rc;
 err_out:
 	USECBOOT_LOG("Missing TLV with tag %x\r\n", hdr->tag);
 	return rc;
+}
+
+static int usecboot_crypto_check(uint8_t *signature, uint8_t *pubkey,
+				 uint8_t *msg, size_t msglen)
+{
+	if (crypto_ed25519_check(signature, pubkey, msg, msglen) != 0) {
+		return USECBOOTERR;
+	}
+
+	return USECBOOTOK;
 }
 
 static int usecboot_get_pkey(const struct usecboot_slot *slot,
@@ -86,71 +106,58 @@ static int usecboot_get_pkey(const struct usecboot_slot *slot,
 	uint8_t rootpkey[USECBOOT_PKEY_SIZE];
 	uint32_t pos = 0;
 	size_t msize;
-	int rc;
+	int rc = usecboot_rootpkey(rootpkey, sizeof(rootpkey));
 
-	rc = usecboot_get_rootpkey(rootpkey, sizeof(rootpkey));
-	if (rc != USECBOOTERR_NONE) {
+	if (rc != USECBOOTOK) {
 		goto err_out;
 	}
 
 	pktlv->hdr.tag = USECBOOT_PKEY_TAG;
 	pktlv->hdr.len = sizeof(struct usecboot_pubkey_tlv);
 
-	rc = usecboot_get_tlv(slot, pktlv, &pos);
-
-	if (rc == -USECBOOTERR_ENOENT) {
+	rc = usecboot_tlv(slot, pktlv, &pos);
+	if (rc == USECBOOTERR) {
 		/* set the pubkey to the root pubkey */
 		USECBOOT_LOG("Missing public key, using root public key\r\n");
 		usecboot_cpy(pktlv->pubkey, rootpkey, USECBOOT_PKEY_SIZE);
-		goto ok_out;
+		rc = USECBOOTOK;
+		return rc;
 	}
 
 	msize = usecboot_getbe32(pktlv->signature.msg_size);
-	if ((rc != USECBOOTERR_NONE) || (msize != USECBOOT_PKEY_SIZE)) {
+	if (msize != USECBOOT_PKEY_SIZE) {
+		rc = USECBOOTERR;
 		goto err_out;
 	}
 
-#if CONFIG_USECBOOT_MAX_REJECTED_PKEY != 0
-	/* Is the pubkey on the list of rejected pubkeys ? */
-	for (uint32_t i = 0U; i < CONFIG_USECBOOT_MAX_REJECTED_PKEY; i++) {
-		rc = usecboot_get_rejected_pubkey(i, msg, USECBOOT_PKEY_SIZE);
-		if (rc == USECBOOTERR_ENOENT) {
-			break;
-		}
-
-		rc = usecboot_cmp(msg, pktlv->pubkey, USECBOOT_PKEY_SIZE);
-		if (rc == 0) {
-			/* The pubkey has been rejected */
-			USECBOOT_LOG("Invalid public key\r\n")
-			goto err_out;
-		}
+	rc = usecboot_allowed_pubkey(pktlv->pubkey, USECBOOT_PKEY_SIZE);
+	if (rc != USECBOOTOK) {
+		goto err_out;
 	}
-#endif
 
 	/* set the position to the start of the signature tlv */
 	pos += sizeof(struct usecboot_pubkey_tlv);
 	pos -= sizeof(struct usecboot_signature_tlv);
 	rc = usecboot_read(slot, pos - msize, (void *)msg, msize);
-
-	if (rc != USECBOOTERR_NONE) {
+	if (rc != USECBOOTOK) {
 		goto err_out;
 	}
 
 	/* Verify the pubkey using the root pubkey */
-	rc = crypto_ed25519_check(pktlv->signature.signature, rootpkey, msg,
-				  msize);
-	if (rc != 0) {
-		USECBOOT_LOG("Invalid public key\r\n");
+	rc = usecboot_crypto_check(pktlv->signature.signature, rootpkey, msg,
+				   msize);
+	if (rc != USECBOOTOK) {
 		goto err_out;
 	}
 
-ok_out:
-	return USECBOOTERR_NONE;
+	return rc;
 err_out:
-	return -USECBOOTERR_EFAULT;
+	USECBOOT_LOG("Invalid public key\r\n");
+	return rc;
 }
 
-static int usecboot_signature_ok(const struct usecboot_slot *slot)
+static void usecboot_verify_signature(const struct usecboot_slot *slot,
+				      struct usecboot_slot_state *state)
 {
 	struct usecboot_pubkey_tlv pktlv;
 	struct usecboot_signature_tlv sigtlv = {
@@ -158,41 +165,41 @@ static int usecboot_signature_ok(const struct usecboot_slot *slot)
 		.hdr.len = sizeof(sigtlv),
 	};
 	uint32_t pos;
-	size_t msize;
-	int rc;
+	size_t msz;
 
-	rc = usecboot_get_pkey(slot, &pktlv);
-	if (rc != USECBOOTERR_NONE) {
+	state->hsig = state->seed ^ USECBOOTERR;
+	if (usecboot_get_pkey(slot, &pktlv) != USECBOOTOK) {
 		goto err_out;
 	}
 
-	rc = usecboot_get_tlv(slot, &sigtlv, &pos);
-	if (rc != USECBOOTERR_NONE) {
+	if (usecboot_tlv(slot, &sigtlv, &pos) != USECBOOTOK) {
 		goto err_out;
 	}
 
-	msize = usecboot_getbe32(sigtlv.msg_size);
-	if ((msize > pos) || (msize > CONFIG_USECBOOT_MAX_HDRSIZE)) {
+	msz = usecboot_getbe32(sigtlv.msg_size);
+	if ((msz > pos) || (msz > CONFIG_USECBOOT_MAX_HDRSIZE)) {
 		goto err_out;
 	}
 
-	rc = usecboot_read(slot, pos - msize, (void *)msg, msize);
-	if (rc != USECBOOTERR_NONE) {
+	if (usecboot_read(slot, pos - msz, (void *)msg, msz) != USECBOOTOK) {
 		goto err_out;
 	}
 
-	rc = crypto_ed25519_check(sigtlv.signature, pktlv.pubkey, msg, msize);
-	if (rc != 0) {
+
+	if (usecboot_crypto_check(sigtlv.signature, pktlv.pubkey, msg, msz) !=
+	    USECBOOTOK) {
 		goto err_out;
 	}
 
-	return USECBOOTERR_NONE;
+	state->hsig = state->seed ^ USECBOOTOK;
+	return;
 err_out:
 	USECBOOT_LOG("Invalid signature\r\n");
-	return -USECBOOTERR_EFAULT;
+	return;
 }
 
-static int usecboot_hash_ok(const struct usecboot_slot *slot, uint32_t *ioff)
+static void usecboot_verify_hash(const struct usecboot_slot *slot,
+				 struct usecboot_slot_state *state)
 {
 	struct usecboot_hash_tlv hashtlv = {
 		.hdr.tag = USECBOOT_HASH_TAG,
@@ -200,24 +207,23 @@ static int usecboot_hash_ok(const struct usecboot_slot *slot, uint32_t *ioff)
 	};
 	uint32_t off;
 	size_t len;
-	int rc;
 
-	rc = usecboot_get_tlv(slot, &hashtlv, NULL);
+	state->ihsh = state->hsig ^ USECBOOTERR;
 
-	if (rc != USECBOOTERR_NONE) {
+	if (usecboot_tlv(slot, &hashtlv, NULL) != USECBOOTOK) {
 		goto err_out;
 	}
 
 	off = usecboot_getbe32(hashtlv.offset);
 	len = usecboot_getbe32(hashtlv.msg_size);
-	*ioff = off;
+	state->ioff = off;
 
 	slot->api->hash_init(slot);
 	while (len != 0) {
 		const size_t rdlen = len < sizeof(msg) ? len : sizeof(msg);
 
-		rc = usecboot_read(slot, off, (void *)msg, rdlen);
-		if (rc != USECBOOTERR_NONE) {
+		if (usecboot_read(slot, off, (void *)msg, rdlen) !=
+		    USECBOOTOK) {
 			break;
 		}
 
@@ -226,15 +232,63 @@ static int usecboot_hash_ok(const struct usecboot_slot *slot, uint32_t *ioff)
 		len -= rdlen;
 	}
 
-	if (slot->api->hash_cmp(slot, hashtlv.hash, USECBOOT_HASH_SIZE) != 0) {
+	if (slot->api->hash_cmp(slot, hashtlv.hash, USECBOOT_HASH_SIZE) !=
+	    USECBOOTOK) {
 		goto err_out;
 	}
 
-	return USECBOOTERR_NONE;
+	if (len != 0U) {
+		goto err_out;
+	}
+
+	state->ihsh = state->hsig ^ USECBOOTOK;
+	state->ioff ^= state->ihsh;
+	return;
 err_out:
-	*ioff = 0U;
+	state->ioff = 0U;
+	state->ioff ^= state->ihsh;
 	USECBOOT_LOG("Invalid image hash\r\n");
-	return -USECBOOTERR_EFAULT;
+}
+
+void usecboot_verify(const struct usecboot_slot *slot,
+		     struct usecboot_slot_state *state)
+{
+	state->seed = USECBOOT_SEED;
+	usecboot_verify_signature(slot, state);
+	state->hsig ^= (uint32_t)((void *)usecboot_verify_signature);
+	usecboot_verify_hash(slot, state);
+	state->ihsh ^= (uint32_t)((void *)usecboot_verify_hash);
+	state->ioff ^= (uint32_t)((void *)usecboot_verify_hash);
+	state->chksum = state->seed ^ state->hsig ^ state->ihsh ^ state->ioff;
+}
+
+int usecboot_validate(const struct usecboot_slot_state *state)
+{
+	uint32_t chk;
+
+	chk = state->seed ^ state->hsig ^ state->ihsh ^state->ioff;
+	if (state->chksum != chk) {	/* tampering detected spin */
+		for (;;);
+	}
+
+	chk = (uint32_t)((void *)usecboot_verify_signature);
+	chk ^= state->seed ^ state->hsig;
+	if (chk != USECBOOTOK) {	/* bad signature */
+		return USECBOOTERR;
+	}
+
+	chk = (uint32_t)((void *)usecboot_verify_hash);
+	chk ^= state->hsig ^ state->ihsh;
+	if (chk != USECBOOTOK) {	/* bad hash */
+		return USECBOOTERR;
+	}
+
+	return USECBOOTOK;
+}
+
+uint32_t usecboot_ioff(const struct usecboot_slot_state *state)
+{
+	return state->ioff ^ state->ihsh;
 }
 
 void usecboot_boot(void)
@@ -242,16 +296,16 @@ void usecboot_boot(void)
 	uint8_t idx = 0;
 
 	USECBOOT_LOG("==== Welcome to uSECboot ====\r\n");
-
 	for (;;) {
-		const struct usecboot_slot *slot=usecboot_get_slot(idx);
-		uint32_t img_off;
+		const struct usecboot_slot *slot = usecboot_slot(idx);
+		struct usecboot_slot_state state;
 
 		if ((slot == NULL) || (slot->size == 0U) ||
 		    (slot->api == NULL)) {
 			break;
 		}
 
+		idx++;
 		if ((slot->api->prep == NULL) ||
 		    (slot->api->read == NULL) ||
 		    (slot->api->boot == NULL) ||
@@ -262,27 +316,20 @@ void usecboot_boot(void)
 			continue;
 		}
 
-		if (slot->api->prep(slot) != 0) {
+		if (slot->api->prep(slot) != USECBOOTOK) {
 			USECBOOT_LOG("Slot preparation failed\r\n");
 			continue;
 		}
 
-		if ((usecboot_signature_ok(slot) == USECBOOTERR_NONE) &&
-		    (usecboot_hash_ok(slot, &img_off) == USECBOOTERR_NONE) &&
-		    (img_off < slot->size)) {
+		usecboot_verify(slot, &state);
+		if (usecboot_validate(&state) == USECBOOTOK) {
 			USECBOOT_LOG("Booting image idx %d from offset %x\r\n",
-				     idx, img_off);
-			slot->api->boot(slot, img_off);
-			USECBOOT_LOG("Boot failed\r\n");
-		} else {
-			USECBOOT_LOG("Verify failed\r\n");
-			if (slot->api->clean != NULL) {
-				slot->api->clean(slot);
-			}
+				     idx, usecboot_ioff(&state));
+			slot->api->boot(slot, usecboot_ioff(&state));
 		}
 
-		USECBOOT_LOG("Trying next slot...\r\n");
-		idx++;
+		USECBOOT_LOG("Boot failed\r\n");
+		usecboot_clean(slot);
 	}
 
 	USECBOOT_LOG("Nothing to boot, spinning...\r\n");

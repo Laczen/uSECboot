@@ -93,42 +93,18 @@ void uart_puts(const char *str);
 
 int prep(const struct usecboot_slot *slot)
 {
-	uint8_t msg[2048];
-	uint8_t hash[32];
-	size_t len = 0x70000;
-	uint8_t off = 0;
-	int rc;
-	struct soft_sha256_ctx ctx;
-
-	led_set();
-	soft_sha256_init(&ctx);
-	while (len != 0) {
-		const size_t rdlen = len < sizeof(msg) ? len : sizeof(msg);
-
-		rc = slot->api->read(slot, off, (void *)msg, rdlen);
-		if (rc != USECBOOTERR_NONE) {
-			break;
-		}
-
-		soft_sha256_update(&ctx, msg, rdlen);
-		off += rdlen;
-		len -= rdlen;
-	}
-
-	soft_sha256_final (&ctx, hash);
-	led_reset();
-	return USECBOOTERR_NONE;
+	(void)slot;
+	return USECBOOTOK;
 }
 
 int read(const struct usecboot_slot *slot, uint32_t start, void *data,
 	 size_t len)
 {
 	const struct myslot *myslot = container_of(slot, struct myslot, slot);
-
 	void *flash_ptr = (void *)(myslot->offset + start);
 
 	memcpy(data, flash_ptr, len);
-	return USECBOOTERR_NONE;
+	return USECBOOTOK;
 }
 
 void boot(const struct usecboot_slot *slot, uint32_t ioff)
@@ -162,7 +138,7 @@ void hash_init(const struct usecboot_slot *slot)
 }
 
 void hash_update(const struct usecboot_slot *slot, const void *msg,
-		   size_t msglen)
+		 size_t msglen)
 {
 	const struct myslot *myslot = container_of(slot, struct myslot, slot);
 
@@ -173,21 +149,25 @@ int hash_cmp(const struct usecboot_slot *slot, const void *hash,
 	     size_t hashlen)
 {
 	if (hashlen != SOFT_SHA256_DIGESTSIZE) {
-		return 1;
+		return USECBOOTERR;
 	}
 
 	const struct myslot *myslot = container_of(slot, struct myslot, slot);
 	const uint8_t *p = (const uint8_t *)hash;
 	uint8_t digest[SOFT_SHA256_DIGESTSIZE];
-	int rv = 0;
+	uint8_t chk = 0U;
 
 	soft_sha256_final(myslot->hctx, (void *)digest);
 	for (size_t i = 0; i < sizeof(digest); i++) {
-		rv |= digest[i] ^ p[i];
+		chk |= digest[i] ^ p[i];
 		digest[i] = 0U;
 	}
 
-	return rv == 0U ? 0 : 1;
+	if (chk != 0U) {
+		return USECBOOTERR;
+	}
+
+	return USECBOOTOK;
 }
 
 const struct usecboot_slotapi slotapi = {
@@ -214,7 +194,7 @@ const struct myslot myslot[2] = {
 	},
 };
 
-const struct usecboot_slot *usecboot_get_slot(uint8_t idx)
+const struct usecboot_slot *usecboot_slot(uint8_t idx)
 {
 	if (idx >= sizeof(myslot)/sizeof(myslot[0])) {
 		return NULL;
@@ -223,25 +203,24 @@ const struct usecboot_slot *usecboot_get_slot(uint8_t idx)
 	return &myslot[idx].slot;
 }
 
-int usecboot_get_rejected_pubkey(uint32_t idx, uint8_t *pubkey, size_t len)
+int usecboot_allowed_pubkey(uint8_t *pubkey, size_t len)
 {
-	(void)idx;
 	(void)pubkey;
 	(void)len;
-	return -USECBOOTERR_ENOENT;
+	return USECBOOTOK;
 }
 
-int usecboot_get_rootpkey(void *pkey, size_t len)
+int usecboot_rootpkey(void *pkey, size_t len)
 {
 	const char *rootpkey = USECBOOT_ROOTPKEY;
 	uint8_t *pk = (uint8_t *)pkey;
 
 	if (len != sizeof(USECBOOT_ROOTPKEY) - 1) {
-		return -USECBOOTERR_EINVAL;
+		return USECBOOTERR;
 	}
 
 	memcpy(pk, rootpkey, len);
-	return 0;
+	return USECBOOTOK;
 }
 
 void led_init(void);
