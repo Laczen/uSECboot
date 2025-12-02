@@ -36,17 +36,15 @@ struct usecboot_slot;
 STRUCT_PACKED usecboot_slot_state {
 	uint32_t seed;
 	uint32_t hsig;
-	uint32_t ihsh;
+	uint32_t hshs;
 	uint32_t ioff;
 	uint32_t chksum;
 };
 
 STRUCT_PACKED usecboot_slotapi {
-	int (*prep)(const struct usecboot_slot *slot);
 	int (*read)(const struct usecboot_slot *slot, uint32_t start,
 		    void *data, size_t len);
 	void (*boot)(const struct usecboot_slot *slot, uint32_t ioff);
-	void (*clean)(const struct usecboot_slot *slot);
 	void (*hash_init)(const struct usecboot_slot *slot);
 	void (*hash_update)(const struct usecboot_slot *slot, const void *msg,
 			    size_t msglen);
@@ -70,13 +68,6 @@ STRUCT_PACKED usecboot_tlv_hdr {
  */
 
 void usecboot_boot(void);
-
-/* The following routine can be used to validate the secure_state, if
- * something is wrong with the secure state this routine will result in a
- * panic state that stops execution.
- */
-
-void usecboot_state_valid(struct usecboot_slot_state *state);
 
 /* The following routine can be used by the port to retrieve custom TLV's
  * in the slot routines prep, read, boot or clean. This can be used e.g.

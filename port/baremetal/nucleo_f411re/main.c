@@ -91,12 +91,6 @@ void led_reset(void)
 void *memcpy(void *dst, const void *src, size_t len);
 void uart_puts(const char *str);
 
-int prep(const struct usecboot_slot *slot)
-{
-	(void)slot;
-	return USECBOOTOK;
-}
-
 int read(const struct usecboot_slot *slot, uint32_t start, void *data,
 	 size_t len)
 {
@@ -123,11 +117,6 @@ void boot(const struct usecboot_slot *slot, uint32_t ioff)
 		:
 		: "r" (initial_sp), "r" (reset_handler)
     	);
-}
-
-void clean(const struct usecboot_slot *slot)
-{
-	(void)slot;
 }
 
 void hash_init(const struct usecboot_slot *slot)
@@ -172,9 +161,7 @@ int hash_cmp(const struct usecboot_slot *slot, const void *hash,
 
 const struct usecboot_slotapi slotapi = {
 	.read = read,
-	.prep = prep,
 	.boot = boot,
-	.clean = clean,
 	.hash_init = hash_init,
 	.hash_update = hash_update,
 	.hash_cmp = hash_cmp,
